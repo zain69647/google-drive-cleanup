@@ -1,0 +1,420 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 24px 16px;
+      background: #0b1020;
+      color: #e8edf7;
+      font-family: Arial, sans-serif;
+    }
+
+    .container {
+      max-width: 850px;
+      margin: auto;
+    }
+
+    .card {
+      background: #151d30;
+      border: 1px solid #29354c;
+      border-radius: 14px;
+      padding: 22px;
+      margin-bottom: 18px;
+    }
+
+    h1 { font-size: 27px; margin: 0 0 10px; }
+    h2 { font-size: 18px; }
+    p { color: #aab6cc; line-height: 1.6; }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin: 20px 0;
+    }
+
+    .stat {
+      padding: 15px;
+      border-radius: 10px;
+      background: #202b42;
+      overflow-wrap: anywhere;
+    }
+
+    .stat strong {
+      display: block;
+      font-size: 23px;
+      margin-top: 8px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 13px 18px;
+      font-size: 15px;
+      font-weight: bold;
+      cursor: pointer;
+      margin: 5px 5px 5px 0;
+    }
+
+    button:disabled {
+      opacity: .45;
+      cursor: not-allowed;
+    }
+
+    .primary { background: #4776ef; color: white; }
+    .danger { background: #d83d4e; color: white; }
+    .secondary { background: #34415a; color: white; }
+
+    .warning {
+      background: #342a19;
+      border: 1px solid #6d542b;
+      padding: 13px;
+      border-radius: 8px;
+      color: #f6d9a0;
+      line-height: 1.5;
+    }
+
+    .progress {
+      height: 9px;
+      background: #2a354b;
+      border-radius: 10px;
+      overflow: hidden;
+      margin: 14px 0;
+    }
+
+    .bar {
+      width: 0;
+      height: 100%;
+      background: #5d91ff;
+      transition: width .2s;
+    }
+
+    #status {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      color: #bdc9dc;
+      margin-top: 14px;
+    }
+
+    .table-wrap { overflow-x: auto; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 10px;
+      border-bottom: 1px solid #303c52;
+    }
+
+    th { color: #9eb8f6; }
+    td { overflow-wrap: anywhere; }
+
+    .hidden { display: none; }
+
+    @media (max-width: 540px) {
+      body { padding: 14px 10px; }
+      .card { padding: 16px; }
+      h1 { font-size: 23px; }
+      .stats { grid-template-columns: 1fr; }
+      .stat strong { font-size: 20px; }
+      button { width: 100%; margin: 5px 0; }
+    }
+  </style>
+</head>
+
+<body>
+<div class="container">
+
+  <div class="card">
+    <h1>Google Drive Cleanup</h1>
+    <p>
+      Scan files owned by your Google account and move all scanned,
+      owned files to Trash in batches.
+    </p>
+
+    <div class="warning">
+      <strong>Important:</strong> This tool can move your personal
+      documents, photos, backups and other files to Trash. It excludes
+      this Apps Script project. It does not permanently erase files.
+      Review the results before confirming.
+    </div>
+
+    <div class="stats">
+      <div class="stat">
+        Files found
+        <strong id="count">0</strong>
+      </div>
+      <div class="stat">
+        Approx. size scanned
+        <strong id="size">0 MB</strong>
+      </div>
+      <div class="stat">
+        Files moved to Trash
+        <strong id="deleted">0</strong>
+      </div>
+    </div>
+
+    <button id="scanBtn" class="primary" onclick="startScan()">
+      Scan My Drive
+    </button>
+
+    <button id="deleteBtn" class="danger" onclick="deleteAll()" disabled>
+      Move All Found Files to Trash
+    </button>
+
+    <div class="progress">
+      <div class="bar" id="bar"></div>
+    </div>
+
+    <div id="status">Ready. Start a scan to find your files.</div>
+  </div>
+
+  <div class="card">
+    <h2>File Preview</h2>
+    <p id="previewInfo">
+      The first 20 scanned files will appear here.
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Size</th>
+            <th>Type</th>
+          </tr>
+        </thead>
+        <tbody id="preview"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  let fileIds = [];
+  let totalBytes = 0;
+  let scanComplete = false;
+  let busy = false;
+  let trashedCount = 0;
+  let skippedCount = 0;
+  let errorCount = 0;
+
+  function setStatus(message) {
+    document.getElementById("status").textContent = message;
+  }
+
+  function setBusy(value) {
+    busy = value;
+    document.getElementById("scanBtn").disabled = value;
+    updateDeleteButton();
+  }
+
+  function updateDeleteButton() {
+    document.getElementById("deleteBtn").disabled =
+      busy || !scanComplete || fileIds.length === 0;
+  }
+
+  function updateStats() {
+    document.getElementById("count").textContent =
+      fileIds.length.toLocaleString();
+
+    const mb = totalBytes / (1024 * 1024);
+    document.getElementById("size").textContent =
+      mb >= 1024
+        ? (mb / 1024).toFixed(2) + " GB"
+        : mb.toFixed(2) + " MB";
+
+    document.getElementById("deleted").textContent =
+      trashedCount.toLocaleString();
+  }
+
+  function addPreview(files) {
+    const tbody = document.getElementById("preview");
+
+    files.forEach(function(file) {
+      if (tbody.children.length >= 20) return;
+
+      const tr = document.createElement("tr");
+      const name = document.createElement("td");
+      const size = document.createElement("td");
+      const type = document.createElement("td");
+
+      name.textContent = file.name;
+      size.textContent = file.sizeMB + " MB";
+      type.textContent = file.type.split("/").pop();
+
+      tr.append(name, size, type);
+      tbody.appendChild(tr);
+    });
+
+    document.getElementById("previewInfo").textContent =
+      "Showing up to 20 files. The full scan is counted above.";
+  }
+
+  function startScan() {
+    if (busy) return;
+
+    if (fileIds.length > 0 &&
+        !confirm("Start a new scan and replace the current results?")) {
+      return;
+    }
+
+    fileIds = [];
+    totalBytes = 0;
+    scanComplete = false;
+    trashedCount = 0;
+    skippedCount = 0;
+    errorCount = 0;
+
+    document.getElementById("preview").replaceChildren();
+    document.getElementById("bar").style.width = "0%";
+    updateStats();
+    setBusy(true);
+    setStatus("Starting scan...");
+
+    scanBatch(null);
+  }
+
+  function scanBatch(token) {
+    google.script.run
+      .withSuccessHandler(function(result) {
+        result.files.forEach(function(file) {
+          fileIds.push(file.id);
+          totalBytes += file.size;
+        });
+
+        addPreview(result.files);
+        updateStats();
+
+        setStatus(
+          "Scanning Drive...\n" +
+          fileIds.length.toLocaleString() + " files found so far."
+        );
+
+        if (result.done) {
+          scanComplete = true;
+          setBusy(false);
+          document.getElementById("bar").style.width = "100%";
+
+          setStatus(
+            "Scan complete.\n" +
+            fileIds.length.toLocaleString() +
+            " owned files found.\n" +
+            "Review the preview before proceeding."
+          );
+
+          updateDeleteButton();
+        } else {
+          // Continue with the saved Drive iterator token.
+          setTimeout(function() {
+            scanBatch(result.nextToken);
+          }, 150);
+        }
+      })
+      .withFailureHandler(function(error) {
+        setBusy(false);
+        scanComplete = false;
+        updateDeleteButton();
+
+        setStatus(
+          "Scan failed: " + error.message +
+          "\nYou can start a new scan after checking Apps Script Executions."
+        );
+      })
+      .getOwnedFilesBatch(token);
+  }
+
+  function deleteAll() {
+    if (busy || !scanComplete || fileIds.length === 0) return;
+
+    const message =
+      "Move ALL " + fileIds.length +
+      " scanned files owned by your account to Trash?\n\n" +
+      "This may include documents, photos and backups.\n" +
+      "The operation cannot be undone from this dashboard.\n\n" +
+      "Continue only if you are sure.";
+
+    if (!confirm(message)) return;
+
+    // Require a second explicit confirmation.
+    if (!confirm(
+      "FINAL CONFIRMATION:\nMove every scanned file to Trash?"
+    )) return;
+
+    setBusy(true);
+    let offset = 0;
+    const total = fileIds.length;
+
+    trashedCount = 0;
+    skippedCount = 0;
+    errorCount = 0;
+    updateStats();
+
+    function nextDeleteBatch() {
+      if (offset >= total) {
+        setBusy(false);
+        document.getElementById("bar").style.width = "100%";
+
+        setStatus(
+          "Cleanup finished.\n" +
+          "Moved to Trash: " + trashedCount + "\n" +
+          "Skipped: " + skippedCount + "\n" +
+          "Errors: " + errorCount + "\n\n" +
+          "Check the Apps Script execution log for details if needed."
+        );
+        return;
+      }
+
+      const batch = fileIds.slice(offset, offset + 50);
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          trashedCount += result.trashed;
+          skippedCount += result.skipped;
+          errorCount += result.errors.length;
+
+          offset += batch.length;
+          updateStats();
+
+          document.getElementById("bar").style.width =
+            Math.round((offset / total) * 100) + "%";
+
+          setStatus(
+            "Moving files to Trash...\n" +
+            offset + " of " + total + " processed.\n" +
+            "Moved: " + trashedCount +
+            " | Skipped: " + skippedCount +
+            " | Errors: " + errorCount
+          );
+
+          setTimeout(nextDeleteBatch, 150);
+        })
+        .withFailureHandler(function(error) {
+          setBusy(false);
+          setStatus(
+            "Cleanup stopped at " + offset + " of " + total +
+            ".\nError: " + error.message +
+            "\nRun a fresh scan before retrying."
+          );
+        })
+        .trashOwnedFilesBatch(batch);
+    }
+
+    nextDeleteBatch();
+  }
+</script>
+</body>
+</html>
+
